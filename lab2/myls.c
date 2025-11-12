@@ -44,26 +44,62 @@ void print_permissions(mode_t mode) {
         mode & S_IXOTH ? 'x' : '-');
 }
 
-void print_long_format(FileEntry *files, int count) {
+void print_long_format(FileEntry *files, int count, const char *dirname) {
     long total = 0;
     for (int i = 0; i < count; total += files[i++].info.st_blocks);
     printf("total %ld\n", total);
 
+    int link_w = 0, user_w = 0, group_w = 0, size_w = 0;
+    for (int i = 0; i < count; i++) {
+        struct stat *info = &files[i].info;
+        int link_len = snprintf(NULL, 0, "%ld", (long)info->st_nlink);
+        if (link_len > link_w) link_w = link_len;
+
+        struct passwd *pw = getpwuid(info->st_uid);
+        struct group  *gr = getgrgid(info->st_gid);
+        int user_len = pw ? (int)strlen(pw->pw_name)
+                          : snprintf(NULL, 0, "%u", info->st_uid);
+        int group_len = gr ? (int)strlen(gr->gr_name)
+                           : snprintf(NULL, 0, "%u", info->st_gid);
+        if (user_len > user_w) user_w = user_len;
+        if (group_len > group_w) group_w = group_len;
+
+        int size_len = snprintf(NULL, 0, "%ld", (long)info->st_size);
+        if (size_len > size_w) size_w = size_len;
+    }
+
     for (int i = 0; i < count; i++) {
         struct stat *info = &files[i].info;
         print_permissions(info->st_mode);
-        
+
         struct passwd *pw = getpwuid(info->st_uid);
-        struct group *gr = getgrgid(info->st_gid);
-        
-        printf("%ld %-8s %-8s %8ld %.12s ",
-               (long)info->st_nlink,
-               pw ? pw->pw_name : "?",
-               gr ? gr->gr_name : "?",
-               (long)info->st_size,
+        struct group  *gr = getgrgid(info->st_gid);
+
+        char uid_buf[16], gid_buf[16];
+        const char *user = pw ? pw->pw_name :
+                            (snprintf(uid_buf, sizeof(uid_buf), "%u", info->st_uid), uid_buf);
+        const char *group = gr ? gr->gr_name :
+                             (snprintf(gid_buf, sizeof(gid_buf), "%u", info->st_gid), gid_buf);
+
+        printf("%*ld %-*s %-*s %*ld %.12s ",
+               link_w, (long)info->st_nlink,
+               user_w, user,
+               group_w, group,
+               size_w, (long)info->st_size,
                ctime(&info->st_mtime) + 4);
-               
+
         print_colored(files[i].name, info->st_mode);
+
+        if (S_ISLNK(info->st_mode)) {
+            char path[PATH_MAX], target[PATH_MAX];
+            snprintf(path, sizeof(path), "%s/%s", dirname, files[i].name);
+            ssize_t len = readlink(path, target, sizeof(target) - 1);
+            if (len != -1) {
+                target[len] = '\0';
+                printf(" -> %s", target);
+            }
+        }
+
         putchar('\n');
     }
 }
@@ -112,8 +148,8 @@ void process_dir(const char *dirname, Options opts) {
     qsort(files, count, sizeof(FileEntry), 
           (int (*)(const void*, const void*))compare_files);
 
-    opts.long_format ? print_long_format(files, count) : 
-                       print_short_format(files, count, max_width);
+    opts.long_format ? print_long_format(files, count, dirname) :
+                   print_short_format(files, count, max_width);
 }
 
 int main(int argc, char *argv[]) {

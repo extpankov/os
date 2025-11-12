@@ -17,9 +17,9 @@ int main(int argc, char *argv[]) {
 
     mode_t mode = st.st_mode;
 
-    // если цифры (например "755")
     if (argv[1][0] >= '0' && argv[1][0] <= '9') {
-        mode = strtol(argv[1], NULL, 8);
+        mode_t new_mode = strtol(argv[1], NULL, 8);
+        mode = (st.st_mode & S_IFMT) | new_mode;
     } else {
         char *p = argv[1];
         int who = 0;

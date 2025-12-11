@@ -2,89 +2,66 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <time.h>
+#include <sys/wait.h>
 
-int main() {
-    int p2c[2];
-    int c2p[2];
-    pid_t pid;
-    char buffer[256];
+int main(void) {
+    int channel[2];
 
-    if (pipe(p2c) == -1 || pipe(c2p) == -1) {
-        perror("pipe");
-        exit(1);
+    if (pipe(channel) != 0) {
+        fprintf(stderr, "Не удалось создать канал\n");
+        return 1;
     }
 
-    pid = fork();
-    if (pid == -1) {
-        perror("fork");
-        exit(1);
+    pid_t child = fork();
+    if (child < 0) {
+        perror("fork failed");
+        return 1;
     }
 
-    if (pid == 0) {
-        close(p2c[1]);
-        close(c2p[0]);
+    if (child == 0) {
+        close(channel[1]);
 
-        char ready = 1;
-        if (write(c2p[1], &ready, 1) == -1) {
-            perror("write ready");
-            exit(1);
+        char msg_buf[256];
+        ssize_t nread = read(channel[0], msg_buf, sizeof(msg_buf) - 1);
+        if (nread > 0) {
+            msg_buf[nread] = '\0';
+
+            printf("Потомок (PID=%d) получил:\n%s", (int)getpid(), msg_buf);
+
+            time_t now = time(NULL);
+            struct tm local_tm;
+            localtime_r(&now, &local_tm);
+            char time_str[64];
+            asctime_r(&local_tm, time_str);
+            time_str[strcspn(time_str, "\n")] = '\0';
+            printf("Время в потомке: %s\n", time_str);
         }
 
-        ssize_t bytes = read(p2c[0], buffer, sizeof(buffer) - 1);
-        if (bytes <= 0) {
-            perror("read");
-            exit(1);
-        }
-        buffer[bytes] = '\0';
-
-        printf("Дочерний процесс PID=%d\n", getpid());
-        printf("%s", buffer);
-
-        time_t t = time(NULL);
-        struct tm tm;
-        char tstr[32];
-        localtime_r(&t, &tm);
-        asctime_r(&tm, tstr);
-        tstr[strcspn(tstr, "\n")] = 0;
-
-        printf("Время дочернего процесса: %s\n", tstr);
-
-        close(p2c[0]);
-        close(c2p[1]);
-        exit(0);
+        close(channel[0]);
+        _exit(0);
     } else {
-        close(p2c[0]);
-        close(c2p[1]);
+        close(channel[0]);
 
-        char ready;
-        if (read(c2p[0], &ready, 1) <= 0) {
-            perror("read ready");
-            exit(1);
+        time_t current_time = time(NULL);
+        struct tm parent_tm;
+        localtime_r(&current_time, &parent_tm);
+        char parent_time[64];
+        asctime_r(&parent_tm, parent_time);
+        parent_time[strcspn(parent_time, "\n")] = '\0';
+
+        char payload[300];
+        int len = snprintf(payload, sizeof(payload),
+                          "Привет от родителя!\n"
+                          "PID родителя: %d\n"
+                          "Время отправки: %s\n",
+                          (int)getpid(), parent_time);
+
+        if (write(channel[1], payload, len) != len) {
+            perror("Ошибка записи в канал");
         }
 
-        time_t t = time(NULL);
-        struct tm tm;
-        char tstr[32];
-        localtime_r(&t, &tm);
-        asctime_r(&tm, tstr);
-        tstr[strcspn(tstr, "\n")] = 0;
-
-        sleep(5);
-
-        char message[256];
-        snprintf(message, sizeof(message),
-                 "Сообщение от родителя PID=%d\nВремя родителя: %s\n",
-                 getpid(), tstr);
-
-        if (write(p2c[1], message, strlen(message)) == -1) {
-            perror("write msg");
-            exit(1);
-        }
-
-        close(p2c[1]);
-        close(c2p[0]);
+        close(channel[1]);
         wait(NULL);
     }
 

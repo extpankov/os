@@ -24,15 +24,27 @@ typedef struct {
 } FileEntry;
 
 void print_colored(const char* name, mode_t mode) {
-    const char *color = S_ISDIR(mode) ? BLUE : 
-                       (mode & S_IXUSR) ? GREEN :
-                       S_ISLNK(mode) ? CYAN : "";
+    const char *color;
+    if (S_ISLNK(mode)) {
+        color = CYAN;
+    } else if (S_ISDIR(mode)) {
+        color = BLUE;
+    } else if (mode & S_IXUSR || mode & S_IXGRP || mode & S_IXOTH) {
+        color = GREEN;
+    } else {
+        color = "";
+    }
     printf("%s%s" RESET, color, name);
 }
 
+
 void print_permissions(mode_t mode) {
+    char type = '-';
+    if (S_ISDIR(mode)) type = 'd';
+    else if (S_ISLNK(mode)) type = 'l';
+
     printf("%c%c%c%c%c%c%c%c%c%c ",
-        S_ISDIR(mode) ? 'd' : '-',
+        type,
         mode & S_IRUSR ? 'r' : '-',
         mode & S_IWUSR ? 'w' : '-',
         mode & S_IXUSR ? 'x' : '-',
@@ -43,6 +55,7 @@ void print_permissions(mode_t mode) {
         mode & S_IWOTH ? 'w' : '-',
         mode & S_IXOTH ? 'x' : '-');
 }
+
 
 void print_long_format(FileEntry *files, int count, const char *dirname) {
     long total = 0;

@@ -88,63 +88,120 @@ void add_file(const char *archive, const char *filename) {
     printf("Файл '%s' добавлен в архив '%s'\n", filename, archive);
 }
 
-void extract_file(const char *archive, const char *filename) {
-    int arch = open(archive, O_RDWR);
-    if (arch < 0) {
-        perror("open archive");
+ssize_t read_all_or_fail(int fd, void *buf, size_t size) {
+    size_t read_bytes = 0;
+    while (read_bytes < size) {
+        ssize_t res = read(fd, (char *)buf + read_bytes, size - read_bytes);
+        if (res <= 0) return -1;
+        read_bytes += res;
+    }
+    return read_bytes;
+}
+
+void extract_and_remove(const char *archive, const char *filename) {
+    int arch_fd = open(archive, O_RDONLY);
+    if (arch_fd < 0) {
+        perror("open archive for reading");
+        exit(1);
+    }
+
+    // Создаём временный файл
+    char temp_name[] = "/tmp/archXXXXXX";
+    int temp_fd = mkstemp(temp_name);
+    if (temp_fd < 0) {
+        perror("create temp file");
+        close(arch_fd);
         exit(1);
     }
 
     struct FileInfo info;
-    off_t pos = 0;
     int found = 0;
+    char *file_data = NULL;
+    struct FileInfo target_info = {0};
 
-    while (read(arch, &info, sizeof(info)) == sizeof(info)) {
-        off_t data_pos = lseek(arch, 0, SEEK_CUR);
-
+    while (read(arch_fd, &info, sizeof(info)) == sizeof(info)) {
         if (!info.deleted && strcmp(info.name, filename) == 0) {
             found = 1;
-            int out = open(info.name, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-            if (out < 0) {
-                perror("create output");
+            target_info = info;
+
+            file_data = malloc(info.size);
+            if (!file_data) {
+                perror("malloc");
+                close(arch_fd);
+                close(temp_fd);
+                unlink(temp_name);
                 exit(1);
             }
 
-            char buf[BUF_SIZE];
-            off_t left = info.size;
-            while (left > 0) {
-                ssize_t chunk = (left > BUF_SIZE) ? BUF_SIZE : left;
-                read_all(arch, buf, chunk);
-                write_all(out, buf, chunk);
-                left -= chunk;
+            if (read_all_or_fail(arch_fd, file_data, info.size) != info.size) {
+                fprintf(stderr, "Failed to read file data\n");
+                free(file_data);
+                close(arch_fd);
+                close(temp_fd);
+                unlink(temp_name);
+                exit(1);
             }
-
-            close(out);
-
-            chmod(info.name, info.mode);
-            chown(info.name, info.uid, info.gid);
-            struct timespec times[2];
-            times[0].tv_sec = info.mtime;
-            times[0].tv_nsec = 0;
-            times[1] = times[0];
-            utimensat(AT_FDCWD, info.name, times, 0);
-
-            info.deleted = 1;
-            lseek(arch, pos, SEEK_SET);
-            write_all(arch, &info, sizeof(info));
-
-            printf("Файл '%s' извлечён и удалён из архива\n", filename);
-            close(arch);
-            return;
+            break;
         }
-
-        lseek(arch, info.size, SEEK_CUR);
-        pos = lseek(arch, 0, SEEK_CUR);
+        lseek(arch_fd, info.size, SEEK_CUR);
     }
 
-    close(arch);
-    if (!found)
+    if (!found) {
         printf("Файл '%s' не найден в архиве\n", filename);
+        close(arch_fd);
+        close(temp_fd);
+        unlink(temp_name);
+        exit(1);
+    }
+
+    int out_fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (out_fd < 0) {
+        perror("create output file");
+        free(file_data);
+        close(arch_fd);
+        close(temp_fd);
+        unlink(temp_name);
+        exit(1);
+    }
+    write_all(out_fd, file_data, target_info.size);
+    close(out_fd);
+
+    chmod(filename, target_info.mode);
+    chown(filename, target_info.uid, target_info.gid);
+    struct timespec times[2] = {{target_info.mtime, 0}, {target_info.mtime, 0}};
+    utimensat(AT_FDCWD, filename, times, 0);
+
+    free(file_data);
+
+    lseek(arch_fd, 0, SEEK_SET);
+    while (read(arch_fd, &info, sizeof(info)) == sizeof(info)) {
+        if (!info.deleted && strcmp(info.name, filename) == 0) {
+            lseek(arch_fd, info.size, SEEK_CUR);
+            continue;
+        }
+
+        write_all(temp_fd, &info, sizeof(info));
+
+        char buf[BUF_SIZE];
+        off_t left = info.size;
+        while (left > 0) {
+            ssize_t chunk = (left > BUF_SIZE) ? BUF_SIZE : left;
+            read_all_or_fail(arch_fd, buf, chunk);
+            write_all(temp_fd, buf, chunk);
+            left -= chunk;
+        }
+    }
+
+    close(arch_fd);
+    close(temp_fd);
+
+    if (rename(temp_name, archive) != 0) {
+        perror("rename temp archive");
+        unlink(temp_name);
+        exit(1);
+    }
+
+    printf("Файл '%s' извлечён и удалён из архива\n", filename);
 }
 
 void show_archive(const char *archive) {
@@ -195,7 +252,7 @@ int main(int argc, char *argv[]) {
     if (strcmp(flag, "-i") == 0 && argc >= 4) {
         add_file(archive, argv[3]);
     } else if (strcmp(flag, "-e") == 0 && argc >= 4) {
-        extract_file(archive, argv[3]);
+        extract_and_remove(archive, argv[3]);
     } else if (strcmp(flag, "-s") == 0) {
         show_archive(archive);
     } else {
